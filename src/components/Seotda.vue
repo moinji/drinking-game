@@ -88,11 +88,16 @@ const compareHands = (a, b) => {
 }
 
 // 상태 관리
-const gameState = ref('setup') // setup, dealing, reveal, result
+const gameState = ref('setup') // setup, dealing, swap, reveal, result
 const players = ref([])
 const newPlayerName = ref('')
 const results = ref([])
 const deck = ref([])
+const remainingDeck = ref([]) // 교체용 남은 덱
+const currentSwapPlayerIndex = ref(0) // 현재 교체 중인 플레이어
+const showDiscardedCards = ref(false) // 버린 패 보기 토글
+const isCardHidden = ref(true) // 패 가림 상태 (다음 사람에게 넘길 때)
+const showJokbo = ref(false) // 족보 보기 모달
 
 // 공개 진행 상태
 const currentRevealIndex = ref(-1)
@@ -105,7 +110,7 @@ const countDown = ref(0)
 const addPlayer = () => {
   const name = newPlayerName.value.trim()
   if (name && players.value.length < 10) {
-    players.value.push({ name, cards: [], hand: null, isRevealed: false })
+    players.value.push({ name, cards: [], hand: null, isRevealed: false, discardedCards: [], hasSwapped: false })
     newPlayerName.value = ''
   }
 }
@@ -135,21 +140,64 @@ const startGame = () => {
     player.cards = [deck.value[index * 2], deck.value[index * 2 + 1]]
     player.hand = getHandRank(player.cards[0], player.cards[1])
     player.isRevealed = false
+    player.discardedCards = []
+    player.hasSwapped = false
   })
 
-  // 순위 미리 계산 (실제 섯다 규칙 적용)
-  results.value = [...players.value].sort(compareHands)
+  // 남은 덱 저장 (교체용)
+  remainingDeck.value = deck.value.slice(players.value.length * 2)
 
   currentRevealIndex.value = -1
   revealedPlayers.value = []
   showFinalResult.value = false
+  currentSwapPlayerIndex.value = 0
 
   gameState.value = 'dealing'
 
-  // 카드 배분 애니메이션 후 공개 단계로
+  // 카드 배분 애니메이션 후 교체 단계로
   setTimeout(() => {
-    gameState.value = 'reveal'
+    gameState.value = 'swap'
   }, 1500)
+}
+
+// 카드 교체 (버리기)
+const swapCard = (cardIndex) => {
+  const player = players.value[currentSwapPlayerIndex.value]
+  if (player.hasSwapped || remainingDeck.value.length === 0) return
+
+  // 선택한 카드를 버림
+  const discarded = player.cards.splice(cardIndex, 1)[0]
+  player.discardedCards.push(discarded)
+
+  // 새 카드 뽑기
+  const newCard = remainingDeck.value.shift()
+  player.cards.push(newCard)
+
+  // 족보 재계산
+  player.hand = getHandRank(player.cards[0], player.cards[1])
+  player.hasSwapped = true
+}
+
+// 교체 안함 (패스)
+const skipSwap = () => {
+  players.value[currentSwapPlayerIndex.value].hasSwapped = true
+}
+
+// 다음 플레이어 교체 또는 공개 단계로
+const nextSwapPlayer = () => {
+  if (currentSwapPlayerIndex.value < players.value.length - 1) {
+    currentSwapPlayerIndex.value++
+    isCardHidden.value = true // 다음 사람 패 가리기
+  } else {
+    // 모든 플레이어 교체 완료 - 순위 재계산 후 공개 단계로
+    results.value = [...players.value].sort(compareHands)
+    gameState.value = 'reveal'
+  }
+}
+
+// 내 패 보기
+const revealMyCards = () => {
+  isCardHidden.value = false
 }
 
 // 다음 사람 패 공개
@@ -215,12 +263,18 @@ const resetGame = () => {
     player.cards = []
     player.hand = null
     player.isRevealed = false
+    player.discardedCards = []
+    player.hasSwapped = false
   })
   results.value = []
+  remainingDeck.value = []
   currentRevealIndex.value = -1
   revealedPlayers.value = []
   showFinalResult.value = false
+  showDiscardedCards.value = false
   isRevealing.value = false
+  currentSwapPlayerIndex.value = 0
+  isCardHidden.value = true
   gameState.value = 'setup'
 }
 
@@ -229,10 +283,14 @@ const fullReset = () => {
   players.value = []
   results.value = []
   deck.value = []
+  remainingDeck.value = []
   currentRevealIndex.value = -1
   revealedPlayers.value = []
   showFinalResult.value = false
+  showDiscardedCards.value = false
   isRevealing.value = false
+  currentSwapPlayerIndex.value = 0
+  isCardHidden.value = true
   gameState.value = 'setup'
 }
 
@@ -261,9 +319,87 @@ const currentLeader = () => {
   <div class="game-container">
     <h2 class="game-title">🎴 섯다</h2>
 
+    <!-- 족보 모달 -->
+    <div v-if="showJokbo" class="jokbo-modal" @click.self="showJokbo = false">
+      <div class="jokbo-content">
+        <div class="jokbo-header">
+          <h3>섯다 족보</h3>
+          <button class="close-btn" @click="showJokbo = false">×</button>
+        </div>
+        <div class="jokbo-list">
+          <div class="jokbo-section">
+            <h4>광땡 (최상위)</h4>
+            <div class="jokbo-item legendary">
+              <span class="jokbo-name">38광땡</span>
+              <span class="jokbo-desc">3월광 + 8월광</span>
+            </div>
+            <div class="jokbo-item legendary">
+              <span class="jokbo-name">18광땡</span>
+              <span class="jokbo-desc">1월광 + 8월광</span>
+            </div>
+            <div class="jokbo-item legendary">
+              <span class="jokbo-name">13광땡</span>
+              <span class="jokbo-desc">1월광 + 3월광</span>
+            </div>
+          </div>
+          <div class="jokbo-section">
+            <h4>땡 (같은 월 2장)</h4>
+            <div class="jokbo-item epic">
+              <span class="jokbo-name">장땡 ~ 삥땡</span>
+              <span class="jokbo-desc">10땡 > 9땡 > ... > 1땡</span>
+            </div>
+          </div>
+          <div class="jokbo-section">
+            <h4>특수 조합</h4>
+            <div class="jokbo-item rare">
+              <span class="jokbo-name">알리</span>
+              <span class="jokbo-desc">1월 + 2월</span>
+            </div>
+            <div class="jokbo-item rare">
+              <span class="jokbo-name">독사</span>
+              <span class="jokbo-desc">1월 + 4월</span>
+            </div>
+            <div class="jokbo-item rare">
+              <span class="jokbo-name">구삥</span>
+              <span class="jokbo-desc">1월 + 9월</span>
+            </div>
+            <div class="jokbo-item rare">
+              <span class="jokbo-name">장삥</span>
+              <span class="jokbo-desc">1월 + 10월</span>
+            </div>
+            <div class="jokbo-item rare">
+              <span class="jokbo-name">장사</span>
+              <span class="jokbo-desc">4월 + 10월</span>
+            </div>
+            <div class="jokbo-item rare">
+              <span class="jokbo-name">세륙</span>
+              <span class="jokbo-desc">4월 + 6월</span>
+            </div>
+          </div>
+          <div class="jokbo-section">
+            <h4>끗 (나머지)</h4>
+            <div class="jokbo-item normal">
+              <span class="jokbo-name">9끗 ~ 1끗</span>
+              <span class="jokbo-desc">두 패 합의 끝자리 (높을수록 좋음)</span>
+            </div>
+            <div class="jokbo-item worst">
+              <span class="jokbo-name">망통</span>
+              <span class="jokbo-desc">0끗 (최하위)</span>
+            </div>
+          </div>
+          <div class="jokbo-tip">
+            <p>💡 동점일 경우: 광 > 높은 월 순으로 승부</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 설정 화면 -->
     <div v-if="gameState === 'setup'" class="setup-section">
-      <p class="game-desc">참가자를 추가하고 게임을 시작하세요!</p>
+      <div class="setup-header">
+        <p class="game-desc">참가자를 추가하고 게임을 시작하세요!</p>
+        <button class="btn jokbo-btn" @click="showJokbo = true">족보 보기</button>
+      </div>
 
       <div class="input-group">
         <input
@@ -304,6 +440,88 @@ const currentLeader = () => {
           <div class="card-back dealing" v-for="n in 6" :key="n">🎴</div>
         </div>
         <p class="dealing-text">패를 돌리는 중...</p>
+      </div>
+    </div>
+
+    <!-- 패 교체 단계 -->
+    <div v-if="gameState === 'swap'" class="swap-section">
+      <div class="swap-header">
+        <h3>패 교체</h3>
+        <p class="swap-desc">카드를 터치하면 버리고 새 카드를 뽑습니다</p>
+        <p class="swap-progress">{{ currentSwapPlayerIndex + 1 }} / {{ players.length }}</p>
+      </div>
+
+      <div class="current-player-swap">
+        <!-- 패 가림 화면 (다음 사람에게 넘길 때) -->
+        <div v-if="isCardHidden" class="hidden-screen">
+          <div class="hidden-cards">
+            <div class="card-back-large">🎴</div>
+            <div class="card-back-large">🎴</div>
+          </div>
+          <div class="swap-player-name">{{ players[currentSwapPlayerIndex]?.name }}</div>
+          <p class="hidden-message">본인만 볼 수 있도록 기기를 가져가세요</p>
+          <button class="btn reveal-my-btn" @click="revealMyCards">
+            내 패 보기
+          </button>
+        </div>
+
+        <!-- 패 공개 상태 -->
+        <div v-else>
+          <div class="swap-player-name">{{ players[currentSwapPlayerIndex]?.name }}의 차례</div>
+
+          <div class="swap-cards" v-if="!players[currentSwapPlayerIndex]?.hasSwapped">
+            <div
+              v-for="(card, index) in players[currentSwapPlayerIndex]?.cards"
+              :key="card.id"
+              class="swap-card"
+              @click="swapCard(index)"
+            >
+              <span class="card-emoji">{{ getCardEmoji(card.month) }}</span>
+              <span class="card-month">{{ card.name }}</span>
+              <span v-if="card.isGwang" class="gwang-badge">광</span>
+              <div class="swap-hint">터치하면 버림</div>
+            </div>
+          </div>
+
+          <div class="swap-result" v-else>
+            <p v-if="players[currentSwapPlayerIndex]?.discardedCards.length > 0">
+              카드를 교체했습니다
+            </p>
+            <p v-else>패스했습니다</p>
+            <div class="swap-cards readonly">
+              <div
+                v-for="card in players[currentSwapPlayerIndex]?.cards"
+                :key="card.id"
+                class="swap-card confirmed"
+              >
+                <span class="card-emoji">{{ getCardEmoji(card.month) }}</span>
+                <span class="card-month">{{ card.name }}</span>
+                <span v-if="card.isGwang" class="gwang-badge">광</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="swap-actions">
+            <button
+              v-if="!players[currentSwapPlayerIndex]?.hasSwapped"
+              class="btn skip-btn"
+              @click="skipSwap"
+            >
+              패스 (교체 안함)
+            </button>
+            <button
+              v-if="players[currentSwapPlayerIndex]?.hasSwapped"
+              class="btn next-btn"
+              @click="nextSwapPlayer"
+            >
+              {{ currentSwapPlayerIndex < players.length - 1 ? '다음 사람' : '패 공개하기' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="remaining-cards-info">
+        남은 카드: {{ remainingDeck.length }}장
       </div>
     </div>
 
@@ -430,7 +648,12 @@ const currentLeader = () => {
       </div>
 
       <div class="all-results">
-        <h4>전체 순위</h4>
+        <div class="results-header">
+          <h4>전체 순위</h4>
+          <button class="btn-toggle" @click="showDiscardedCards = !showDiscardedCards">
+            {{ showDiscardedCards ? '버린 패 숨기기' : '버린 패 보기' }}
+          </button>
+        </div>
         <div class="rank-list">
           <div
             class="rank-item"
@@ -445,6 +668,9 @@ const currentLeader = () => {
             </span>
             <span class="rank-cards">
               {{ player.cards[0]?.name }} + {{ player.cards[1]?.name }}
+            </span>
+            <span v-if="showDiscardedCards && player.discardedCards.length > 0" class="discarded-info">
+              버림: {{ player.discardedCards.map(c => c.name).join(', ') }}
             </span>
           </div>
         </div>
@@ -1102,5 +1328,407 @@ const currentLeader = () => {
 .btn.secondary {
   background: var(--card-bg);
   border: 2px solid var(--border-color);
+}
+
+/* 패 교체 단계 */
+.swap-section {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.swap-header {
+  text-align: center;
+}
+
+.swap-header h3 {
+  font-size: 1.5rem;
+  margin-bottom: 8px;
+  color: var(--neon-yellow);
+}
+
+.swap-desc {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin-bottom: 5px;
+}
+
+.swap-progress {
+  color: var(--neon-pink);
+  font-weight: bold;
+}
+
+.current-player-swap {
+  background: var(--card-bg);
+  border-radius: 16px;
+  padding: 25px;
+  text-align: center;
+}
+
+.swap-player-name {
+  font-size: 1.3rem;
+  font-weight: bold;
+  margin-bottom: 20px;
+  color: var(--neon-blue);
+}
+
+.swap-cards {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.swap-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px 25px;
+  background: linear-gradient(145deg, #2a2a3e, #1a1a2e);
+  border-radius: 16px;
+  border: 3px solid var(--border-color);
+  cursor: pointer;
+  position: relative;
+  transition: all 0.3s ease;
+  min-width: 100px;
+}
+
+.swap-card:hover {
+  border-color: var(--neon-pink);
+  transform: translateY(-5px);
+  box-shadow: 0 10px 30px rgba(233, 69, 96, 0.3);
+}
+
+.swap-card:active {
+  transform: scale(0.95);
+}
+
+.swap-card .card-emoji {
+  font-size: 2.5rem;
+}
+
+.swap-card .card-month {
+  font-size: 1.1rem;
+  margin-top: 8px;
+}
+
+.swap-card .gwang-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background: gold;
+  color: #000;
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border-radius: 10px;
+  font-weight: bold;
+}
+
+.swap-hint {
+  position: absolute;
+  bottom: -25px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.swap-card:hover .swap-hint {
+  opacity: 1;
+}
+
+.swap-card.confirmed {
+  cursor: default;
+  border-color: var(--neon-blue);
+}
+
+.swap-card.confirmed:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.swap-cards.readonly .swap-card {
+  cursor: default;
+}
+
+.swap-cards.readonly .swap-card:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.swap-result {
+  margin-bottom: 20px;
+}
+
+.swap-result p {
+  color: var(--neon-yellow);
+  margin-bottom: 15px;
+  font-size: 1.1rem;
+}
+
+.swap-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.skip-btn {
+  background: var(--card-bg) !important;
+  border: 2px solid var(--border-color);
+  padding: 12px 25px;
+}
+
+.next-btn {
+  background: linear-gradient(135deg, var(--neon-blue), var(--neon-purple)) !important;
+  padding: 12px 25px;
+}
+
+.remaining-cards-info {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+/* 버린 패 보기 */
+.results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.results-header h4 {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.btn-toggle {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.btn-toggle:hover {
+  border-color: var(--neon-pink);
+}
+
+.discarded-info {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  font-size: 0.75rem;
+  color: #ff6b6b;
+  padding-left: 35px;
+}
+
+.rank-item {
+  flex-wrap: wrap;
+}
+
+/* 패 가림 화면 */
+.hidden-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 30px 0;
+}
+
+.hidden-cards {
+  display: flex;
+  gap: 15px;
+}
+
+.card-back-large {
+  font-size: 4rem;
+  filter: grayscale(0.5);
+  animation: cardFloat 2s ease-in-out infinite;
+}
+
+.card-back-large:nth-child(2) {
+  animation-delay: 0.3s;
+}
+
+@keyframes cardFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.hidden-message {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  text-align: center;
+}
+
+.reveal-my-btn {
+  background: linear-gradient(135deg, var(--neon-pink), var(--neon-purple)) !important;
+  padding: 15px 40px;
+  font-size: 1.1rem;
+  animation: buttonGlow 2s infinite;
+}
+
+@keyframes buttonGlow {
+  0%, 100% { box-shadow: 0 0 15px var(--neon-pink); }
+  50% { box-shadow: 0 0 30px var(--neon-purple); }
+}
+
+/* 족보 모달 */
+.jokbo-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 20px;
+}
+
+.jokbo-content {
+  background: var(--bg-secondary);
+  border-radius: 20px;
+  max-width: 400px;
+  width: 100%;
+  max-height: 80vh;
+  overflow-y: auto;
+  border: 2px solid var(--border-color);
+}
+
+.jokbo-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 20px;
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  background: var(--bg-secondary);
+}
+
+.jokbo-header h3 {
+  margin: 0;
+  font-size: 1.3rem;
+  background: linear-gradient(135deg, var(--neon-pink), var(--neon-yellow));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 5px 10px;
+}
+
+.close-btn:hover {
+  color: var(--text-primary);
+}
+
+.jokbo-list {
+  padding: 15px 20px;
+}
+
+.jokbo-section {
+  margin-bottom: 20px;
+}
+
+.jokbo-section h4 {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  margin-bottom: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.jokbo-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 10px;
+  margin-bottom: 6px;
+}
+
+.jokbo-item.legendary {
+  background: linear-gradient(135deg, rgba(255, 107, 107, 0.2), rgba(255, 217, 61, 0.2));
+  border: 1px solid rgba(255, 217, 61, 0.4);
+}
+
+.jokbo-item.epic {
+  background: linear-gradient(135deg, rgba(155, 89, 182, 0.2), rgba(233, 69, 96, 0.2));
+  border: 1px solid rgba(155, 89, 182, 0.4);
+}
+
+.jokbo-item.rare {
+  background: linear-gradient(135deg, rgba(52, 152, 219, 0.2), rgba(155, 89, 182, 0.2));
+  border: 1px solid rgba(52, 152, 219, 0.4);
+}
+
+.jokbo-item.normal {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.jokbo-item.worst {
+  background: rgba(255, 100, 100, 0.15);
+  border: 1px solid rgba(255, 100, 100, 0.3);
+}
+
+.jokbo-name {
+  font-weight: bold;
+  font-size: 0.95rem;
+}
+
+.jokbo-desc {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.jokbo-tip {
+  background: rgba(255, 215, 0, 0.1);
+  border: 1px solid rgba(255, 215, 0, 0.3);
+  border-radius: 10px;
+  padding: 12px;
+  margin-top: 10px;
+}
+
+.jokbo-tip p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--neon-yellow);
+}
+
+/* 설정 헤더 */
+.setup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.setup-header .game-desc {
+  margin: 0;
+}
+
+.jokbo-btn {
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  background: var(--card-bg) !important;
+  border: 1px solid var(--border-color);
+}
+
+.jokbo-btn:hover {
+  border-color: var(--neon-yellow);
 }
 </style>
