@@ -200,6 +200,104 @@ const revealMyCards = () => {
   isCardHidden.value = false
 }
 
+// 패 교체 추천 로직
+const getSwapRecommendation = (player) => {
+  if (!player || !player.cards || player.cards.length < 2) return null
+
+  const card1 = player.cards[0]
+  const card2 = player.cards[1]
+  const hand = player.hand
+
+  // 광땡이면 절대 버리지 마
+  if (hand.rank <= 3) {
+    return { action: 'keep', message: '광땡! 절대 버리지 마세요', cardIndex: -1 }
+  }
+
+  // 땡이면 유지
+  if (hand.rank === 4) {
+    return { action: 'keep', message: `${hand.name}! 좋은 패입니다`, cardIndex: -1 }
+  }
+
+  // 특수조합 (알리~세륙)이면 유지 권장
+  if (hand.rank >= 5 && hand.rank <= 10) {
+    return { action: 'keep', message: `${hand.name}! 괜찮은 패입니다`, cardIndex: -1 }
+  }
+
+  // 끗이나 망통인 경우
+  const score = hand.score
+
+  // 어떤 카드를 버릴지 결정
+  let discardIndex = 0
+  let reason = ''
+
+  // 광은 절대 버리지 않음
+  if (card1.isGwang && !card2.isGwang) {
+    discardIndex = 1
+    reason = '광 카드는 유지'
+  } else if (!card1.isGwang && card2.isGwang) {
+    discardIndex = 0
+    reason = '광 카드는 유지'
+  } else {
+    // 둘 다 광이 아니면, 특수조합 가능성이 낮은 쪽 버리기
+    // 1월, 4월, 10월은 특수조합에 많이 쓰이므로 유지
+    const specialMonths = [1, 4, 10]
+    const card1Special = specialMonths.includes(card1.month)
+    const card2Special = specialMonths.includes(card2.month)
+
+    if (card1Special && !card2Special) {
+      discardIndex = 1
+      reason = `${card1.name}은 특수조합 가능성 있음`
+    } else if (!card1Special && card2Special) {
+      discardIndex = 0
+      reason = `${card2.name}은 특수조합 가능성 있음`
+    } else {
+      // 둘 다 특수하거나 둘 다 아니면, 낮은 월 버리기
+      discardIndex = card1.month < card2.month ? 0 : 1
+      reason = '낮은 월 카드 버리기'
+    }
+  }
+
+  // 망통이면 강력 추천
+  if (score === 0) {
+    return {
+      action: 'swap',
+      message: `망통! ${player.cards[discardIndex].name} 버리기 추천`,
+      cardIndex: discardIndex,
+      reason: reason,
+      strong: true
+    }
+  }
+
+  // 낮은 끗(1~4)이면 교체 추천
+  if (score <= 4) {
+    return {
+      action: 'swap',
+      message: `${score}끗... ${player.cards[discardIndex].name} 버리기 추천`,
+      cardIndex: discardIndex,
+      reason: reason,
+      strong: false
+    }
+  }
+
+  // 중간 끗(5~6)이면 선택에 맡김
+  if (score <= 6) {
+    return {
+      action: 'maybe',
+      message: `${score}끗, 교체는 선택`,
+      cardIndex: discardIndex,
+      reason: `바꾸려면 ${player.cards[discardIndex].name}`,
+      strong: false
+    }
+  }
+
+  // 높은 끗(7~9)이면 유지 권장
+  return {
+    action: 'keep',
+    message: `${score}끗! 나쁘지 않아요`,
+    cardIndex: -1
+  }
+}
+
 // 다음 사람 패 공개
 const revealNext = async () => {
   if (isRevealing.value) return
@@ -469,17 +567,42 @@ const currentLeader = () => {
         <div v-else>
           <div class="swap-player-name">{{ players[currentSwapPlayerIndex]?.name }}의 차례</div>
 
+          <!-- 추천 메시지 -->
+          <div
+            v-if="!players[currentSwapPlayerIndex]?.hasSwapped && getSwapRecommendation(players[currentSwapPlayerIndex])"
+            class="recommendation"
+            :class="{
+              'rec-keep': getSwapRecommendation(players[currentSwapPlayerIndex]).action === 'keep',
+              'rec-swap': getSwapRecommendation(players[currentSwapPlayerIndex]).action === 'swap',
+              'rec-maybe': getSwapRecommendation(players[currentSwapPlayerIndex]).action === 'maybe',
+              'rec-strong': getSwapRecommendation(players[currentSwapPlayerIndex]).strong
+            }"
+          >
+            <span class="rec-icon">
+              {{ getSwapRecommendation(players[currentSwapPlayerIndex]).action === 'keep' ? '👍' :
+                 getSwapRecommendation(players[currentSwapPlayerIndex]).action === 'swap' ? '🔄' : '🤔' }}
+            </span>
+            <span class="rec-message">{{ getSwapRecommendation(players[currentSwapPlayerIndex]).message }}</span>
+            <span v-if="getSwapRecommendation(players[currentSwapPlayerIndex]).reason" class="rec-reason">
+              {{ getSwapRecommendation(players[currentSwapPlayerIndex]).reason }}
+            </span>
+          </div>
+
           <div class="swap-cards" v-if="!players[currentSwapPlayerIndex]?.hasSwapped">
             <div
               v-for="(card, index) in players[currentSwapPlayerIndex]?.cards"
               :key="card.id"
               class="swap-card"
+              :class="{ 'recommended-discard': getSwapRecommendation(players[currentSwapPlayerIndex])?.cardIndex === index }"
               @click="swapCard(index)"
             >
               <span class="card-emoji">{{ getCardEmoji(card.month) }}</span>
               <span class="card-month">{{ card.name }}</span>
               <span v-if="card.isGwang" class="gwang-badge">광</span>
               <div class="swap-hint">터치하면 버림</div>
+              <div v-if="getSwapRecommendation(players[currentSwapPlayerIndex])?.cardIndex === index" class="discard-badge">
+                버리기 추천
+              </div>
             </div>
           </div>
 
@@ -1730,5 +1853,97 @@ const currentLeader = () => {
 
 .jokbo-btn:hover {
   border-color: var(--neon-yellow);
+}
+
+/* 추천 메시지 */
+.recommendation {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 12px 20px;
+  border-radius: 12px;
+  margin-bottom: 20px;
+  animation: recPop 0.3s ease-out;
+}
+
+@keyframes recPop {
+  0% { transform: scale(0.9); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.recommendation.rec-keep {
+  background: linear-gradient(135deg, rgba(46, 204, 113, 0.2), rgba(39, 174, 96, 0.2));
+  border: 1px solid rgba(46, 204, 113, 0.5);
+}
+
+.recommendation.rec-swap {
+  background: linear-gradient(135deg, rgba(241, 196, 15, 0.2), rgba(243, 156, 18, 0.2));
+  border: 1px solid rgba(241, 196, 15, 0.5);
+}
+
+.recommendation.rec-swap.rec-strong {
+  background: linear-gradient(135deg, rgba(231, 76, 60, 0.2), rgba(192, 57, 43, 0.2));
+  border: 1px solid rgba(231, 76, 60, 0.5);
+  animation: recPop 0.3s ease-out, strongPulse 1s infinite;
+}
+
+@keyframes strongPulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(231, 76, 60, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(231, 76, 60, 0.5); }
+}
+
+.recommendation.rec-maybe {
+  background: linear-gradient(135deg, rgba(155, 89, 182, 0.2), rgba(142, 68, 173, 0.2));
+  border: 1px solid rgba(155, 89, 182, 0.5);
+}
+
+.rec-icon {
+  font-size: 1.5rem;
+}
+
+.rec-message {
+  font-weight: bold;
+  font-size: 1rem;
+}
+
+.rec-reason {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+/* 버리기 추천 카드 표시 */
+.swap-card.recommended-discard {
+  border-color: rgba(241, 196, 15, 0.7);
+  position: relative;
+}
+
+.swap-card.recommended-discard::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(241, 196, 15, 0.3), rgba(243, 156, 18, 0.1));
+  z-index: -1;
+  animation: recommendGlow 1.5s infinite;
+}
+
+@keyframes recommendGlow {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+.discard-badge {
+  position: absolute;
+  bottom: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: linear-gradient(135deg, #f39c12, #e74c3c);
+  color: white;
+  font-size: 0.7rem;
+  padding: 3px 10px;
+  border-radius: 10px;
+  white-space: nowrap;
+  font-weight: bold;
 }
 </style>
