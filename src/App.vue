@@ -13,6 +13,7 @@ import CoinTruth from './components/CoinTruth.vue'
 import RankingGame from './components/RankingGame.vue'
 import WhisperGame from './components/WhisperGame.vue'
 import Seotda from './components/Seotda.vue'
+import CatchMind from './components/CatchMind.vue'
 
 const currentGame = ref('menu')
 
@@ -29,7 +30,8 @@ const games = {
   coinTruth: CoinTruth,
   ranking: RankingGame,
   whisper: WhisperGame,
-  seotda: Seotda
+  seotda: Seotda,
+  catchmind: CatchMind
 }
 
 const selectGame = (game) => {

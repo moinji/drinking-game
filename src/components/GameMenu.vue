@@ -13,7 +13,8 @@ const menuItems = [
   { id: 'coinTruth', icon: '🪙', label: '동전 진실게임' },
   { id: 'ranking', icon: '👑', label: '랭킹게임' },
   { id: 'whisper', icon: '🤫', label: '귓속말게임' },
-  { id: 'seotda', icon: '🎴', label: '섯다' }
+  { id: 'seotda', icon: '🎴', label: '섯다' },
+  { id: 'catchmind', icon: '🎨', label: '캐치마인드' }
 ]
 </script>
 
