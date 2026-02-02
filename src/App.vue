@@ -12,6 +12,7 @@ import FemalePreference from './components/FemalePreference.vue'
 import CoinTruth from './components/CoinTruth.vue'
 import RankingGame from './components/RankingGame.vue'
 import WhisperGame from './components/WhisperGame.vue'
+import Seotda from './components/Seotda.vue'
 
 const currentGame = ref('menu')
 
@@ -27,7 +28,8 @@ const games = {
   femalePreference: FemalePreference,
   coinTruth: CoinTruth,
   ranking: RankingGame,
-  whisper: WhisperGame
+  whisper: WhisperGame,
+  seotda: Seotda
 }
 
 const selectGame = (game) => {
