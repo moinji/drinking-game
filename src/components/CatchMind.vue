@@ -184,7 +184,8 @@ const joinRoomListeners = () => {
       currentDrawer.value = data.currentDrawer
       currentWord.value = data.currentWord
       roundNumber.value = data.round || 0
-      timeLeft.value = data.timeLeft || 60
+      timeLeft.value = data.timeLeft ?? 60
+      maxRounds.value = data.maxRounds || 3
     }
   })
   unsubscribers.push(() => unsubRoom())
@@ -225,6 +226,9 @@ const joinRoomListeners = () => {
       if (isHost.value) {
         setTimeout(() => nextRound(), 3000)
       }
+    } else {
+      // 다음 라운드 시작 시 모든 클라이언트의 isCorrect 리셋
+      isCorrect.value = false
     }
   })
   unsubscribers.push(() => unsubAnswer())
@@ -241,6 +245,13 @@ const getRandomWord = () => {
   const word = availableWords[Math.floor(Math.random() * availableWords.length)]
   usedWords.value.push(word)
   return word
+}
+
+// 라운드 수 변경 (호스트만)
+const changeMaxRounds = async (rounds) => {
+  if (!isHost.value) return
+  maxRounds.value = rounds
+  await set(dbRef(database, `rooms/${roomCode.value}/maxRounds`), rounds)
 }
 
 // 게임 시작 (호스트만)
@@ -564,6 +575,23 @@ watch(playerName, (name) => {
         </div>
       </div>
 
+      <div class="rounds-setting">
+        <span class="setting-label">라운드 수</span>
+        <div class="rounds-selector">
+          <button
+            v-for="n in [1, 2, 3, 4, 5]"
+            :key="n"
+            class="round-btn"
+            :class="{ active: maxRounds === n }"
+            :disabled="!isHost"
+            @click="changeMaxRounds(n)"
+          >
+            {{ n }}
+          </button>
+        </div>
+        <span class="setting-hint" v-if="!isHost">방장만 변경 가능</span>
+      </div>
+
       <button
         v-if="isHost"
         class="btn start-btn"
@@ -848,6 +876,59 @@ watch(playerName, (name) => {
   border-radius: 10px;
   font-size: 0.75rem;
   margin-left: 5px;
+}
+
+/* 라운드 설정 */
+.rounds-setting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 15px;
+  background: var(--card-bg);
+  border-radius: 12px;
+}
+
+.setting-label {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.rounds-selector {
+  display: flex;
+  gap: 8px;
+}
+
+.round-btn {
+  width: 40px;
+  height: 40px;
+  border: 2px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.round-btn:disabled {
+  cursor: default;
+}
+
+.round-btn.active {
+  border-color: #00b894;
+  background: rgba(0, 184, 148, 0.2);
+  color: #00b894;
+}
+
+.round-btn:not(:disabled):hover {
+  border-color: #00b894;
+}
+
+.setting-hint {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
 }
 
 .start-btn {
