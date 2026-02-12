@@ -402,6 +402,20 @@ const finalRanking = computed(() => {
   return [...players.value].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0))
 })
 
+// 방 코드 복사
+const copyRoomCode = async () => {
+  try {
+    await navigator.clipboard.writeText(roomCode.value)
+  } catch {
+    const input = document.createElement('input')
+    input.value = roomCode.value
+    document.body.appendChild(input)
+    input.select()
+    document.execCommand('copy')
+    document.body.removeChild(input)
+  }
+}
+
 // 방 나가기 / 로비로
 const leaveRoom = async () => {
   clearAllTimers()
@@ -533,7 +547,7 @@ watch(playerName, (name) => {
       <div class="room-info">
         <span class="room-label">방 코드</span>
         <span class="room-code">{{ roomCode }}</span>
-        <button class="copy-btn" @click="navigator.clipboard.writeText(roomCode)">복사</button>
+        <button class="copy-btn" @click="copyRoomCode">복사</button>
       </div>
 
       <div class="players-list">
