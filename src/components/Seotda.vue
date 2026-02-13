@@ -1,5 +1,18 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, inject, computed, onMounted, onUnmounted, watch } from 'vue'
+import { database, ref as dbRef, set, onValue, update, off } from '../firebase'
+
+const globalRoom = inject('globalRoom')
+
+// 멀티플레이어 상태
+const isMultiplayer = computed(() => globalRoom?.isInRoom?.value)
+const isHost = computed(() => !isMultiplayer.value || globalRoom?.isHost?.value)
+const roomCode = computed(() => globalRoom?.roomCode?.value)
+const myPlayerId = computed(() => globalRoom?.myPlayerId?.value || 'local')
+const myPlayerName = computed(() => globalRoom?.myPlayerName?.value || '')
+
+// Firebase 리스너
+let unsubscribers = []
 
 // 화투 패 정의 (1~10월, 각 2장)
 const createDeck = () => {
@@ -106,8 +119,92 @@ const isRevealing = ref(false)
 const showFinalResult = ref(false)
 const countDown = ref(0)
 
-// 플레이어 추가
+// 멀티플레이어: 내 턴인지 확인
+const isMyTurn = computed(() => {
+  if (!isMultiplayer.value) return true
+  const currentPlayer = players.value[currentSwapPlayerIndex.value]
+  return currentPlayer?.odPlayerId === myPlayerId.value
+})
+
+// 멀티플레이어: 내 플레이어 인덱스
+const myPlayerIndex = computed(() => {
+  if (!isMultiplayer.value) return -1
+  return players.value.findIndex(p => p.odPlayerId === myPlayerId.value)
+})
+
+// 멀티플레이어 초기화
+const initMultiplayer = async () => {
+  if (!isMultiplayer.value) return
+
+  // 리스너 설정
+  const dataRef = dbRef(database, `globalRooms/${roomCode.value}/currentGame/data`)
+  const unsub = onValue(dataRef, (snapshot) => {
+    const data = snapshot.val()
+    if (!data) return
+
+    // 상태 동기화
+    gameState.value = data.gameState || 'setup'
+    currentSwapPlayerIndex.value = data.currentSwapPlayerIndex || 0
+    currentRevealIndex.value = data.currentRevealIndex ?? -1
+    showFinalResult.value = data.showFinalResult || false
+    countDown.value = data.countDown || 0
+    isRevealing.value = data.isRevealing || false
+
+    // 플레이어 데이터 동기화
+    if (data.players) {
+      players.value = data.players.map(p => ({
+        ...p,
+        // 본인 턴이 아니면 카드 가리기 (멀티플레이어)
+        cards: (gameState.value === 'swap' && p.odPlayerId !== myPlayerId.value && !p.isRevealed)
+          ? p.cards.map(c => ({ ...c, hidden: true }))
+          : p.cards
+      }))
+    }
+
+    if (data.results) results.value = data.results
+    if (data.remainingDeck) remainingDeck.value = data.remainingDeck
+    if (data.revealedPlayers) revealedPlayers.value = data.revealedPlayers
+  })
+
+  unsubscribers.push(() => off(dataRef))
+
+  // 호스트: 초기 데이터 설정
+  if (isHost.value) {
+    const playerList = globalRoom.players.value.map(p => ({
+      name: p.name,
+      odPlayerId: p.id,
+      cards: [],
+      hand: null,
+      isRevealed: false,
+      discardedCards: [],
+      hasSwapped: false
+    }))
+
+    await set(dataRef, {
+      gameState: 'setup',
+      players: playerList,
+      currentSwapPlayerIndex: 0,
+      currentRevealIndex: -1,
+      showFinalResult: false,
+      countDown: 0,
+      isRevealing: false,
+      results: [],
+      remainingDeck: [],
+      revealedPlayers: []
+    })
+  }
+}
+
+// 멀티플레이어: 상태 동기화
+const syncGameState = async (updates) => {
+  if (!isMultiplayer.value) return
+  await update(dbRef(database, `globalRooms/${roomCode.value}/currentGame/data`), updates)
+}
+
+// 플레이어 추가 (솔로 모드에서만)
 const addPlayer = () => {
+  if (isMultiplayer.value) return // 멀티플레이어에서는 자동으로 추가됨
+
   const name = newPlayerName.value.trim()
   if (name && players.value.length < 10) {
     players.value.push({ name, cards: [], hand: null, isRevealed: false, discardedCards: [], hasSwapped: false })
@@ -115,8 +212,9 @@ const addPlayer = () => {
   }
 }
 
-// 플레이어 제거
+// 플레이어 제거 (솔로 모드에서만)
 const removePlayer = (index) => {
+  if (isMultiplayer.value) return
   players.value.splice(index, 1)
 }
 
@@ -131,7 +229,7 @@ const shuffleDeck = (array) => {
 }
 
 // 게임 시작 - 카드 배분
-const startGame = () => {
+const startGame = async () => {
   if (players.value.length < 2) return
 
   deck.value = shuffleDeck(createDeck())
@@ -154,14 +252,33 @@ const startGame = () => {
 
   gameState.value = 'dealing'
 
+  // 멀티플레이어 동기화
+  if (isMultiplayer.value) {
+    await syncGameState({
+      gameState: 'dealing',
+      players: players.value,
+      remainingDeck: remainingDeck.value,
+      currentSwapPlayerIndex: 0,
+      currentRevealIndex: -1,
+      revealedPlayers: [],
+      showFinalResult: false
+    })
+  }
+
   // 카드 배분 애니메이션 후 교체 단계로
-  setTimeout(() => {
+  setTimeout(async () => {
     gameState.value = 'swap'
+    if (isMultiplayer.value) {
+      await syncGameState({ gameState: 'swap' })
+    }
   }, 1500)
 }
 
 // 카드 교체 (버리기)
-const swapCard = (cardIndex) => {
+const swapCard = async (cardIndex) => {
+  // 멀티플레이어에서 본인 턴이 아니면 무시
+  if (isMultiplayer.value && !isMyTurn.value) return
+
   const player = players.value[currentSwapPlayerIndex.value]
   if (player.hasSwapped || remainingDeck.value.length === 0) return
 
@@ -176,22 +293,54 @@ const swapCard = (cardIndex) => {
   // 족보 재계산
   player.hand = getHandRank(player.cards[0], player.cards[1])
   player.hasSwapped = true
+
+  // 멀티플레이어 동기화
+  if (isMultiplayer.value) {
+    await syncGameState({
+      players: players.value,
+      remainingDeck: remainingDeck.value
+    })
+  }
 }
 
 // 교체 안함 (패스)
-const skipSwap = () => {
+const skipSwap = async () => {
+  // 멀티플레이어에서 본인 턴이 아니면 무시
+  if (isMultiplayer.value && !isMyTurn.value) return
+
   players.value[currentSwapPlayerIndex.value].hasSwapped = true
+
+  // 멀티플레이어 동기화
+  if (isMultiplayer.value) {
+    await syncGameState({ players: players.value })
+  }
 }
 
 // 다음 플레이어 교체 또는 공개 단계로
-const nextSwapPlayer = () => {
+const nextSwapPlayer = async () => {
+  // 멀티플레이어에서 본인 턴이 아니면 무시
+  if (isMultiplayer.value && !isMyTurn.value) return
+
   if (currentSwapPlayerIndex.value < players.value.length - 1) {
     currentSwapPlayerIndex.value++
     isCardHidden.value = true // 다음 사람 패 가리기
+
+    // 멀티플레이어 동기화
+    if (isMultiplayer.value) {
+      await syncGameState({ currentSwapPlayerIndex: currentSwapPlayerIndex.value })
+    }
   } else {
     // 모든 플레이어 교체 완료 - 순위 재계산 후 공개 단계로
     results.value = [...players.value].sort(compareHands)
     gameState.value = 'reveal'
+
+    // 멀티플레이어 동기화
+    if (isMultiplayer.value) {
+      await syncGameState({
+        gameState: 'reveal',
+        results: results.value
+      })
+    }
   }
 }
 
@@ -301,6 +450,7 @@ const getSwapRecommendation = (player) => {
 // 다음 사람 패 공개
 const revealNext = async () => {
   if (isRevealing.value) return
+  if (isMultiplayer.value && !isHost.value) return // 호스트만 공개 가능
 
   currentRevealIndex.value++
 
@@ -308,6 +458,14 @@ const revealNext = async () => {
     // 모두 공개 완료 - 최종 결과
     showFinalResult.value = true
     gameState.value = 'result'
+
+    if (isMultiplayer.value) {
+      await syncGameState({
+        showFinalResult: true,
+        gameState: 'result',
+        currentRevealIndex: currentRevealIndex.value
+      })
+    }
     return
   }
 
@@ -315,8 +473,13 @@ const revealNext = async () => {
 
   // 카운트다운
   countDown.value = 3
+  if (isMultiplayer.value) {
+    await syncGameState({ countDown: 3, isRevealing: true, currentRevealIndex: currentRevealIndex.value })
+  }
+
   for (let i = 3; i >= 1; i--) {
     countDown.value = i
+    if (isMultiplayer.value) await syncGameState({ countDown: i })
     await sleep(600)
   }
   countDown.value = 0
@@ -326,18 +489,34 @@ const revealNext = async () => {
   player.isRevealed = true
   revealedPlayers.value.push(player)
 
+  if (isMultiplayer.value) {
+    await syncGameState({
+      players: players.value,
+      revealedPlayers: revealedPlayers.value,
+      countDown: 0
+    })
+  }
+
   await sleep(500)
   isRevealing.value = false
+  if (isMultiplayer.value) await syncGameState({ isRevealing: false })
 }
 
 // 전체 한번에 공개
 const revealAll = async () => {
   if (isRevealing.value) return
+  if (isMultiplayer.value && !isHost.value) return // 호스트만 공개 가능
+
   isRevealing.value = true
 
   countDown.value = 3
+  if (isMultiplayer.value) {
+    await syncGameState({ countDown: 3, isRevealing: true })
+  }
+
   for (let i = 3; i >= 1; i--) {
     countDown.value = i
+    if (isMultiplayer.value) await syncGameState({ countDown: i })
     await sleep(600)
   }
   countDown.value = 0
@@ -351,12 +530,24 @@ const revealAll = async () => {
   showFinalResult.value = true
   gameState.value = 'result'
   isRevealing.value = false
+
+  if (isMultiplayer.value) {
+    await syncGameState({
+      players: players.value,
+      revealedPlayers: revealedPlayers.value,
+      currentRevealIndex: currentRevealIndex.value,
+      showFinalResult: true,
+      gameState: 'result',
+      countDown: 0,
+      isRevealing: false
+    })
+  }
 }
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
 // 다시 하기
-const resetGame = () => {
+const resetGame = async () => {
   players.value.forEach(player => {
     player.cards = []
     player.hand = null
@@ -374,10 +565,29 @@ const resetGame = () => {
   currentSwapPlayerIndex.value = 0
   isCardHidden.value = true
   gameState.value = 'setup'
+
+  if (isMultiplayer.value && isHost.value) {
+    await syncGameState({
+      players: players.value,
+      results: [],
+      remainingDeck: [],
+      currentRevealIndex: -1,
+      revealedPlayers: [],
+      showFinalResult: false,
+      currentSwapPlayerIndex: 0,
+      isRevealing: false,
+      gameState: 'setup'
+    })
+  }
 }
 
-// 완전 초기화
-const fullReset = () => {
+// 완전 초기화 (멀티플레이어에서는 게임 종료)
+const fullReset = async () => {
+  if (isMultiplayer.value && isHost.value) {
+    await globalRoom.endGame()
+    return
+  }
+
   players.value = []
   results.value = []
   deck.value = []
@@ -411,6 +621,26 @@ const currentLeader = () => {
   if (revealedPlayers.value.length === 0) return null
   return [...revealedPlayers.value].sort(compareHands)[0]
 }
+
+// 라이프사이클
+onMounted(() => {
+  if (isMultiplayer.value) {
+    initMultiplayer()
+  }
+})
+
+onUnmounted(() => {
+  unsubscribers.forEach(unsub => {
+    try { unsub() } catch(e) {}
+  })
+})
+
+// 멀티플레이어 모드 진입 감지
+watch(() => globalRoom?.roomState?.value, (state) => {
+  if (state === 'playing' && isMultiplayer.value) {
+    initMultiplayer()
+  }
+})
 </script>
 
 <template>
@@ -495,11 +725,17 @@ const currentLeader = () => {
     <!-- 설정 화면 -->
     <div v-if="gameState === 'setup'" class="setup-section">
       <div class="setup-header">
-        <p class="game-desc">참가자를 추가하고 게임을 시작하세요!</p>
+        <p class="game-desc">{{ isMultiplayer ? '방 참가자들과 게임을 시작하세요!' : '참가자를 추가하고 게임을 시작하세요!' }}</p>
         <button class="btn jokbo-btn" @click="showJokbo = true">족보 보기</button>
       </div>
 
-      <div class="input-group">
+      <!-- 멀티플레이어 안내 -->
+      <div v-if="isMultiplayer && !isHost" class="host-notice">
+        방장이 게임을 시작하기를 기다리는 중...
+      </div>
+
+      <!-- 솔로 모드: 참가자 추가 -->
+      <div v-if="!isMultiplayer" class="input-group">
         <input
           v-model="newPlayerName"
           type="text"
@@ -516,13 +752,15 @@ const currentLeader = () => {
       <div class="players-list" v-if="players.length > 0">
         <div class="player-tag" v-for="(player, index) in players" :key="index">
           <span>{{ player.name }}</span>
-          <button class="remove-btn" @click="removePlayer(index)">×</button>
+          <span v-if="isMultiplayer && player.odPlayerId === myPlayerId" class="me-badge">나</span>
+          <button v-if="!isMultiplayer" class="remove-btn" @click="removePlayer(index)">×</button>
         </div>
       </div>
 
       <p class="player-count">{{ players.length }}/10명</p>
 
       <button
+        v-if="isHost"
         class="btn start-btn"
         @click="startGame"
         :disabled="players.length < 2"
@@ -549,9 +787,16 @@ const currentLeader = () => {
         <p class="swap-progress">{{ currentSwapPlayerIndex + 1 }} / {{ players.length }}</p>
       </div>
 
-      <div class="current-player-swap">
-        <!-- 패 가림 화면 (다음 사람에게 넘길 때) -->
-        <div v-if="isCardHidden" class="hidden-screen">
+      <!-- 멀티플레이어: 내 턴이 아닐 때 대기 화면 -->
+      <div v-if="isMultiplayer && !isMyTurn" class="waiting-turn">
+        <div class="waiting-icon">⏳</div>
+        <p class="waiting-player">{{ players[currentSwapPlayerIndex]?.name }}님의 차례</p>
+        <p class="waiting-message">기다리는 중...</p>
+      </div>
+
+      <div v-else class="current-player-swap">
+        <!-- 패 가림 화면 (다음 사람에게 넘길 때) - 솔로모드용 -->
+        <div v-if="!isMultiplayer && isCardHidden" class="hidden-screen">
           <div class="hidden-cards">
             <div class="card-back-large">🎴</div>
             <div class="card-back-large">🎴</div>
@@ -900,6 +1145,53 @@ const currentLeader = () => {
   text-align: center;
   color: var(--text-secondary);
   font-size: 0.9rem;
+}
+
+/* 멀티플레이어 스타일 */
+.host-notice {
+  background: rgba(108, 92, 231, 0.2);
+  border: 1px solid rgba(108, 92, 231, 0.5);
+  border-radius: 12px;
+  padding: 15px;
+  text-align: center;
+  color: var(--neon-purple);
+}
+
+.me-badge {
+  background: var(--neon-pink);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  margin-left: 5px;
+}
+
+.waiting-turn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 50px 20px;
+  background: var(--card-bg);
+  border-radius: 16px;
+  text-align: center;
+}
+
+.waiting-icon {
+  font-size: 4rem;
+  margin-bottom: 20px;
+  animation: pulse 2s infinite;
+}
+
+.waiting-player {
+  font-size: 1.3rem;
+  font-weight: bold;
+  color: var(--neon-blue);
+  margin-bottom: 10px;
+}
+
+.waiting-message {
+  color: var(--text-secondary);
 }
 
 .start-btn {

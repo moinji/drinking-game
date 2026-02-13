@@ -1,5 +1,8 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
+import { database, ref as dbRef, set, onValue, update, off } from '../firebase'
+
+const globalRoom = inject('globalRoom')
 
 const participants = ref([])
 const newParticipant = ref('')
@@ -7,26 +10,85 @@ const selectedPerson = ref('')
 const isSpinning = ref(false)
 const rotation = ref(0)
 
+// 멀티플레이어 상태
+const isMultiplayer = computed(() => globalRoom?.isInRoom?.value)
+const isHost = computed(() => !isMultiplayer.value || globalRoom?.isHost?.value)
+const roomCode = computed(() => globalRoom?.roomCode?.value)
+
+// Firebase 리스너
+let unsubscribers = []
+
 const colors = [
   '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4',
   '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F',
   '#BB8FCE', '#85C1E9', '#F8B500', '#00CED1'
 ]
 
-const addParticipant = () => {
+// 멀티플레이어 초기화
+const initMultiplayer = () => {
+  if (!isMultiplayer.value) return
+
+  // 플레이어 이름들로 참가자 초기화
+  const playerNames = globalRoom.players.value.map(p => p.name)
+  participants.value = playerNames
+
+  // 게임 데이터 리스너
+  const dataRef = dbRef(database, `globalRooms/${roomCode.value}/currentGame/data`)
+  const unsub = onValue(dataRef, (snapshot) => {
+    const data = snapshot.val()
+    if (!data) return
+
+    // 동기화된 상태 적용
+    if (data.rotation !== undefined) rotation.value = data.rotation
+    if (data.isSpinning !== undefined) isSpinning.value = data.isSpinning
+    if (data.selectedPerson !== undefined) selectedPerson.value = data.selectedPerson
+    if (data.participants) participants.value = data.participants
+  })
+
+  unsubscribers.push(() => off(dataRef))
+
+  // 초기 데이터 설정 (호스트만)
+  if (isHost.value) {
+    set(dataRef, {
+      participants: playerNames,
+      rotation: 0,
+      isSpinning: false,
+      selectedPerson: ''
+    })
+  }
+}
+
+const addParticipant = async () => {
   const name = newParticipant.value.trim()
   if (name && !participants.value.includes(name)) {
     participants.value.push(name)
     newParticipant.value = ''
+
+    // 멀티플레이어 동기화
+    if (isMultiplayer.value && isHost.value) {
+      await update(dbRef(database, `globalRooms/${roomCode.value}/currentGame/data`), {
+        participants: participants.value
+      })
+    }
   }
 }
 
-const removeParticipant = (index) => {
+const removeParticipant = async (index) => {
+  if (!isHost.value) return
+
   participants.value.splice(index, 1)
+
+  // 멀티플레이어 동기화
+  if (isMultiplayer.value) {
+    await update(dbRef(database, `globalRooms/${roomCode.value}/currentGame/data`), {
+      participants: participants.value
+    })
+  }
 }
 
-const spinRoulette = () => {
+const spinRoulette = async () => {
   if (participants.value.length < 2 || isSpinning.value) return
+  if (!isHost.value) return // 호스트만 돌리기 가능
 
   isSpinning.value = true
   selectedPerson.value = ''
@@ -37,9 +99,26 @@ const spinRoulette = () => {
 
   rotation.value = targetAngle
 
-  setTimeout(() => {
+  // 멀티플레이어 동기화
+  if (isMultiplayer.value) {
+    await update(dbRef(database, `globalRooms/${roomCode.value}/currentGame/data`), {
+      rotation: targetAngle,
+      isSpinning: true,
+      selectedPerson: ''
+    })
+  }
+
+  setTimeout(async () => {
     selectedPerson.value = participants.value[randomIndex]
     isSpinning.value = false
+
+    // 결과 동기화
+    if (isMultiplayer.value) {
+      await update(dbRef(database, `globalRooms/${roomCode.value}/currentGame/data`), {
+        isSpinning: false,
+        selectedPerson: participants.value[randomIndex]
+      })
+    }
   }, 3000)
 }
 
@@ -94,13 +173,44 @@ const handleKeypress = (e) => {
     addParticipant()
   }
 }
+
+// 게임 종료 (방으로 돌아가기)
+const exitGame = async () => {
+  if (isMultiplayer.value && isHost.value) {
+    await globalRoom.endGame()
+  }
+}
+
+onMounted(() => {
+  if (isMultiplayer.value) {
+    initMultiplayer()
+  }
+})
+
+onUnmounted(() => {
+  unsubscribers.forEach(unsub => {
+    try { unsub() } catch(e) {}
+  })
+})
+
+// 멀티플레이어 모드 진입 감지
+watch(() => globalRoom?.roomState?.value, (state) => {
+  if (state === 'playing' && isMultiplayer.value) {
+    initMultiplayer()
+  }
+})
 </script>
 
 <template>
   <div class="game-container">
     <h2 class="game-title">룰렛</h2>
 
-    <div class="input-section">
+    <!-- 멀티플레이어 안내 -->
+    <div v-if="isMultiplayer && !isHost" class="host-notice">
+      방장만 룰렛을 돌릴 수 있습니다
+    </div>
+
+    <div class="input-section" v-if="isHost">
       <input
         v-model="newParticipant"
         placeholder="참가자 이름 입력"
@@ -114,9 +224,10 @@ const handleKeypress = (e) => {
         v-for="(person, index) in participants"
         :key="index"
         class="participant-tag"
+        :style="{ backgroundColor: colors[index % colors.length] }"
       >
         {{ person }}
-        <span class="remove" @click="removeParticipant(index)">×</span>
+        <span v-if="isHost" class="remove" @click="removeParticipant(index)">×</span>
       </div>
     </div>
 
@@ -161,9 +272,18 @@ const handleKeypress = (e) => {
     <button
       class="btn"
       @click="spinRoulette"
-      :disabled="participants.length < 2 || isSpinning"
+      :disabled="participants.length < 2 || isSpinning || !isHost"
     >
-      {{ isSpinning ? '돌리는 중...' : '돌리기!' }}
+      {{ isSpinning ? '돌리는 중...' : (isHost ? '돌리기!' : '방장만 가능') }}
+    </button>
+
+    <!-- 멀티플레이어: 나가기 버튼 -->
+    <button
+      v-if="isMultiplayer && isHost"
+      class="btn exit-btn"
+      @click="exitGame"
+    >
+      게임 종료
     </button>
   </div>
 </template>
@@ -189,5 +309,101 @@ const handleKeypress = (e) => {
 .notice {
   color: var(--text-secondary);
   padding: 40px;
+}
+
+.host-notice {
+  background: rgba(108, 92, 231, 0.2);
+  border: 1px solid rgba(108, 92, 231, 0.5);
+  border-radius: 10px;
+  padding: 10px 15px;
+  margin-bottom: 15px;
+  font-size: 0.9rem;
+  color: var(--neon-purple);
+}
+
+.participant-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+  justify-content: center;
+}
+
+.participant-tag {
+  padding: 8px 12px;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  color: #333;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.participant-tag .remove {
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.2);
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+
+.roulette-container {
+  position: relative;
+  width: 300px;
+  height: 300px;
+  margin: 0 auto 20px;
+}
+
+.roulette-pointer {
+  position: absolute;
+  top: -15px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 15px solid transparent;
+  border-right: 15px solid transparent;
+  border-top: 30px solid var(--neon-pink);
+  z-index: 10;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+}
+
+.roulette-wheel {
+  width: 100%;
+  height: 100%;
+  transition: transform 3s cubic-bezier(0.17, 0.67, 0.12, 0.99);
+}
+
+.roulette-svg {
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 4px 20px rgba(0, 0, 0, 0.3));
+}
+
+.result-box {
+  background: linear-gradient(135deg, var(--neon-pink), var(--neon-purple));
+  padding: 20px;
+  border-radius: 15px;
+  font-size: 1.5rem;
+  font-weight: bold;
+  margin-bottom: 20px;
+  animation: resultPop 0.5s ease-out;
+}
+
+@keyframes resultPop {
+  0% { transform: scale(0.5); opacity: 0; }
+  50% { transform: scale(1.1); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.exit-btn {
+  margin-top: 15px;
+  background: var(--card-bg) !important;
+  border: 1px solid var(--border-color);
 }
 </style>
