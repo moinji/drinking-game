@@ -114,18 +114,26 @@ const selectGame = (gameId) => {
 }
 
 // 방 코드 복사
-const copyRoomCode = async () => {
-  try {
-    await navigator.clipboard.writeText(globalRoom.roomCode.value)
-  } catch (e) {
-    // fallback
-    const input = document.createElement('input')
-    input.value = globalRoom.roomCode.value
-    document.body.appendChild(input)
-    input.select()
-    document.execCommand('copy')
-    document.body.removeChild(input)
+const copyRoomCode = () => {
+  const text = globalRoom.roomCode.value
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text))
+  } else {
+    fallbackCopy(text)
   }
+}
+
+const fallbackCopy = (text) => {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.setAttribute('readonly', '')
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.setSelectionRange(0, textarea.value.length)
+  document.execCommand('copy')
+  document.body.removeChild(textarea)
 }
 
 onMounted(() => {

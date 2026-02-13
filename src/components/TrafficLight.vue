@@ -403,17 +403,26 @@ const finalRanking = computed(() => {
 })
 
 // 방 코드 복사
-const copyRoomCode = async () => {
-  try {
-    await navigator.clipboard.writeText(roomCode.value)
-  } catch {
-    const input = document.createElement('input')
-    input.value = roomCode.value
-    document.body.appendChild(input)
-    input.select()
-    document.execCommand('copy')
-    document.body.removeChild(input)
+const copyRoomCode = () => {
+  const text = roomCode.value
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text))
+  } else {
+    fallbackCopy(text)
   }
+}
+
+const fallbackCopy = (text) => {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.setAttribute('readonly', '')
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.setSelectionRange(0, textarea.value.length)
+  document.execCommand('copy')
+  document.body.removeChild(textarea)
 }
 
 // 방 나가기 / 로비로
